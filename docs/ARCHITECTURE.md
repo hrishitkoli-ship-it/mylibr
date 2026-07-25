@@ -1,95 +1,88 @@
-# MyLibrary (Web) — Architecture
+# MyLibrary (React) — Architecture
 
-100% offline-capable, browser-local personal PDF library and reader.
-No backend, no API keys, no network calls except the one-time load of
-the app's own static assets (and pdf.js from a CDN in dev — see
-SETUP.md for pinning it locally for production).
+100% offline-capable, browser-local personal PDF library and reader,
+built as a static React app deployable to Vercel. No backend, no API
+keys, no network calls except the one-time load of the app's own
+static assets.
 
 ## Stack
 
-| Concern            | Choice                          | Why |
-|---------------------|----------------------------------|-----|
-| Framework            | Flutter Web                     | Reuses the same Dart UI code across the previous mobile scaffold |
-| Local database       | sembast_web (IndexedDB)          | Schemaless, JSON-safe, browser-native persistent storage — survives reloads |
-| Blob storage          | IndexedDB via sembast (base64)   | PDFs and cover PNGs stored as browser-local records, never uploaded |
-| PDF rendering & text  | pdf.js via JS interop            | Mozilla's PDF engine, runs entirely client-side in the tab |
+| Concern            | Choice                    | Why |
+|---------------------|----------------------------|-----|
+| Framework            | React + Vite + TypeScript | Standard, fast dev/build, deploys to Vercel as a zero-config static site |
+| Local database       | Dexie.js (IndexedDB)      | Well-typed wrapper over native IndexedDB, no server, no sync |
+| Blob storage          | IndexedDB (native Blob values, via Dexie) | PDFs and cover images stored as real Blobs — cheaper than base64 |
+| PDF rendering & text  | pdfjs-dist (npm package)  | Mozilla's PDF engine, runs client-side; ships as a normal dependency, no manual interop layer |
 | TTS                   | Web Speech API (`speechSynthesis`) | Native browser TTS, free, no network call at speak-time |
-| State management      | `provider`                      | Same as mobile scaffold |
-| File/image picking    | `file_picker`, `image_picker`   | Both have web implementations backed by the native browser file input |
+| Routing               | react-router-dom (`HashRouter`) | Hash-based routing needs no server rewrite rules on Vercel |
+| State                 | Local component state + Dexie as source of truth | No global store needed at this scope |
 
-## Why not reuse the mobile-native packages directly
+## Why this replaced the Flutter Web attempt
 
-| Mobile package | Web replacement | Reason |
-|---|---|---|
-| ObjectBox | sembast_web | ObjectBox has no web/WASM target |
-| `path_provider` sandbox dir | IndexedDB (via sembast/blob store) | No filesystem access in the browser sandbox |
-| `pdfx` (native render) | pdf.js JS interop | No native PDF renderer available on web |
-| `syncfusion_flutter_pdf` (native text extraction) | pdf.js `getTextContent()` | Syncfusion's Flutter text extraction targets native platforms |
-| `flutter_tts` | Web Speech API interop | flutter_tts's web support is limited; calling `speechSynthesis` directly is more reliable |
+Flutter Web has no native PDF renderer, no native TTS bridge, and no
+IndexedDB-native database — every one of those required a hand-written
+JS interop layer. React talks to `pdfjs-dist`, `Dexie`, and
+`speechSynthesis` directly as normal library calls, with full
+TypeScript types, no interop boilerplate, and a smaller/faster
+production bundle.
 
 ## Directory / storage layout (browser)
 
-Everything lives in IndexedDB, scoped to the site's origin:
+Everything lives in IndexedDB, scoped to the deployed origin:
 
 ```
-IndexedDB: mylibrary.db
-  store: books      -> { uuid, title, author, ..., pdfBlobKey, coverBlobKey }
-  store: bookmarks  -> { id, bookUuid, pageNumber, note, ... }
-  store: blobs       -> { "pdf:<uuid>": {data: base64}, "cover:<uuid>": {data: base64} }
+IndexedDB: mylibrary (Dexie)
+  table: books      -> { uuid, title, author, ..., pageCount, status, genreNames[] }
+  table: bookFiles  -> { uuid, pdfBlob: Blob, coverBlob: Blob }
+  table: bookmarks  -> { id, bookUuid, pageNumber, note, dateCreated }
 ```
 
-Clearing browser site data removes the entire library — this is
-expected for a local-only app and should be called out in the UI
-(e.g. an "export/backup" feature is a natural Phase 2 addition, since
-there is no cloud copy).
+Book metadata and file blobs are split into separate tables so
+listing/searching the bookshelf never has to touch full PDF bytes.
 
 ## Data flow: import
 
 ```
-User taps "Add PDF"
-  -> file_picker web file input, bytes read directly into memory (withData: true)
-  -> LocalBlobStore.savePdf(): base64-encode, write to IndexedDB via sembast
-  -> pdf.js opens the in-memory bytes (pdfBridge.loadDocument)
-  -> pdf.js renders page 1 to a <canvas>, exported as PNG bytes
-  -> LocalBlobStore.saveCover(): base64-encode, write to IndexedDB
-  -> Book record written to sembast 'books' store
-  -> UI refreshes bookshelf grid (Image.memory from blob bytes)
+User clicks "Add PDF" -> native <input type="file"> (src/pages/BookshelfPage.tsx)
+  -> file.arrayBuffer() reads bytes directly in-memory, no upload
+  -> pdfService.open() hands bytes to pdfjs-dist
+  -> pdfService.renderPageToPng() renders page 1 to a <canvas>, exported as a PNG Blob
+  -> libraryRepository.addBook() writes Book + BookFile (pdfBlob, coverBlob) to Dexie
+  -> bookshelf grid re-queries and re-renders
 ```
 
 ## Data flow: TTS playback
 
 ```
-User taps Play in reader toolbar
-  -> pdf.js getTextContent() per page (PdfTextService.extractAllPages)
-  -> ttsBridge.speak(text, rate, pitch, volume) -> window.speechSynthesis
-  -> utterance.onend -> auto-advance to next page's text + re-render that page
-  -> user controls: pause/resume, stop, speech rate slider, pitch slider
+User taps Play in the reader toolbar
+  -> pdfService.extractAllPages() calls page.getTextContent() per page
+  -> TtsController wraps window.speechSynthesis directly (src/lib/ttsController.ts)
+  -> utterance.onend -> auto-advance to next page's text + re-render that page's canvas
+  -> user controls: pause/resume, stop, speed slider, pitch slider
 ```
 
 ## Local database schema
 
-Same logical shape as the mobile scaffold, adapted to plain
-JSON-serializable Dart classes (sembast has no code-generated schema):
-
 ### Book
-`uuid, title, author, description, pdfBlobKey, coverBlobKey,
-hasCustomCover, pageCount, lastReadPage, status (0/1/2), dateAdded,
-dateLastOpened, fileSizeBytes, genreNames: List<String>`
+`uuid, title, author, description, pageCount, lastReadPage,
+status ('unread'|'reading'|'completed'), hasCustomCover, dateAdded,
+dateLastOpened, fileSizeBytes, genreNames: string[]`
 
-Genres are stored as a plain string list on `Book` rather than a
-separate join table — sembast has no native relations, and a personal
-library's tag set is small enough that in-memory filtering (see
-`LibraryRepository.search`) is fast without an index.
+### BookFile
+`uuid, pdfBlob: Blob, coverBlob: Blob`
 
 ### Bookmark
 `id, bookUuid, pageNumber, note, dateCreated`
+
+Genres are a plain string array on `Book` — no join table. A personal
+library's tag set is small enough that in-memory filtering
+(`libraryRepository.search`) is fast without an index.
 
 ## Explicitly out of scope / not used
 
 - No REST/GraphQL client, no BaaS (Firebase/Supabase/etc).
 - No cloud TTS (Google Cloud TTS, ElevenLabs, Amazon Polly).
 - No analytics/crash-reporting SDKs.
-- pdf.js is loaded from a CDN in this scaffold for development
-  convenience; for a genuinely zero-network production deploy, vendor
-  it into `web/pdfjs/` and update the `<script>` src in
-  `web/index.html` (see SETUP.md).
+- pdfjs-dist's worker is bundled locally by Vite (`?url` import) —
+  not fetched from a CDN, so the production build has zero runtime
+  network dependency beyond the initial page load.

@@ -1,70 +1,85 @@
-# MyLibrary (Web) — Setup
+# MyLibrary (React) — Setup
 
 ## Prerequisites
-- Flutter SDK (stable channel) with web support enabled:
-  ```bash
-  flutter config --enable-web
-  ```
-- A Chromium-based browser for local dev (`flutter run -d chrome`)
+- Node.js 18+ and npm
 
 ## First-time setup
 ```bash
-flutter pub get
-flutter run -d chrome
+npm install
+npm run dev
 ```
-No code generation step is required — sembast is schemaless, so
-there's no ObjectBox-style build_runner step in the web build.
+Opens the Vite dev server (default http://localhost:5173).
 
 ## Building for production
 ```bash
-flutter build web --release
+npm run build
 ```
-Output lands in `build/web/` — deploy that directory to any static
-host (Vercel, Netlify, GitHub Pages, etc). Since the app is fully
-client-side and local-only, no server-side runtime is needed.
+Output lands in `dist/` — a fully static site. Preview it locally with:
+```bash
+npm run preview
+```
 
-## Vendoring pdf.js for a fully offline production build
-This scaffold loads pdf.js from cdnjs in `web/index.html` for
-development convenience. For a production deploy with zero external
-requests at runtime:
+## Deploying to Vercel
+This repo includes `vercel.json` pre-configured for a static Vite build:
+```json
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite"
+}
+```
 
-1. Download `pdf.min.js` and `pdf.worker.min.js` from the pdf.js
-   releases (matching version, currently 4.4.168) into `web/pdfjs/`.
-2. Update `web/index.html`:
-   ```html
-   <script src="pdfjs/pdf.min.js"></script>
-   <script>
-     pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdfjs/pdf.worker.min.js';
-   </script>
-   ```
-3. Rebuild — `flutter build web` will bundle `web/pdfjs/` as static
-   assets automatically.
+**Via the Vercel dashboard:** import the GitHub repo, Vercel
+auto-detects the Vite framework preset and the settings above — no
+extra configuration needed. Click Deploy.
+
+**Via the Vercel CLI:**
+```bash
+npm i -g vercel
+vercel
+vercel --prod
+```
+
+No environment variables, no server functions, no database
+provisioning — the entire app is static files plus browser-local
+storage.
+
+## Why HashRouter
+The app uses `react-router-dom`'s `HashRouter` (URLs like
+`/#/read/<uuid>`) instead of `BrowserRouter`. This means client-side
+routes never 404 on a full page reload or direct link, with zero
+Vercel rewrite-rule configuration required. If you'd rather have clean
+URLs (`/read/<uuid>`), switch to `BrowserRouter` and add a
+`vercel.json` rewrite:
+```json
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
+```
 
 ## Browser storage notes
-- All data (PDFs, covers, metadata) lives in IndexedDB, scoped to
-  the deployed origin. Different browsers / private-browsing sessions
+- All data (PDFs, covers, metadata) lives in IndexedDB, scoped to the
+  deployed origin. Different browsers / private-browsing sessions
   will not share the library.
-- IndexedDB has no fixed hard cap in most browsers, but is still
-  subject to overall device storage and browser eviction policies for
-  rarely-used sites — a large PDF library on a phone browser could hit
-  practical limits sooner than on desktop.
 - There is currently no export/backup feature; clearing site data
-  deletes the whole library. Flag this to users in-app.
+  deletes the whole library. Flag this to users in-app as a future
+  improvement.
+- Consider calling `navigator.storage.persist()` on first load to
+  reduce the odds of the browser evicting data under storage pressure.
 
 ## Verifying zero runtime network dependency
 Load the deployed app once (to cache assets), then go offline
-(devtools "Offline" throttling, or airplane mode on mobile) and run
-the full import -> read -> TTS flow. Everything should keep working
-except any use of the CDN-hosted pdf.js in the dev config above — the
-vendored setup removes that last external dependency too.
+(DevTools "Offline" throttling, or airplane mode on mobile) and run
+the full import → read → TTS flow. Everything should keep working —
+pdfjs-dist's worker is bundled as a local asset, not CDN-loaded.
 
-## Testing checklist (adapted for web)
-- [ ] Import PDF works with the browser in offline mode (after first asset load)
-- [ ] Library persists across page reloads (IndexedDB)
-- [ ] Library persists across full browser restart
+## Testing checklist
+- [ ] Import PDF works in offline mode (after first load)
+- [ ] Library persists across page reloads and full browser restarts (IndexedDB)
 - [ ] Cover renders correctly for portrait, landscape, multi-column PDFs
 - [ ] Custom cover override persists after reload
 - [ ] Search matches partial title, author, and genre substrings
 - [ ] TTS play/pause/stop/speed/pitch work in Chrome, Firefox, Safari
-- [ ] Deleting a book removes its PDF and cover blobs from IndexedDB
+- [ ] Deleting a book removes its PDF/cover blobs and bookmarks from IndexedDB
 - [ ] Large PDF (100+ pages) import and page-render performance is acceptable
+- [ ] Deployed Vercel build works identically to local `npm run preview`
