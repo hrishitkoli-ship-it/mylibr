@@ -15,6 +15,7 @@ export function ReaderPage() {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [, forceRender] = useState(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,21 +29,37 @@ export function ReaderPage() {
     let cancelled = false;
 
     (async () => {
-      const b = await libraryRepository.getBook(uuid);
-      const file = await libraryRepository.getBookFile(uuid);
-      if (!b || !file || cancelled) {
-        setLoading(false);
-        return;
-      }
-      setBook(b);
-      const startPage = b.lastReadPage > 0 ? b.lastReadPage : 1;
-      setCurrentPage(startPage);
+      try {
+        const b = await libraryRepository.getBook(uuid);
+        const file = await libraryRepository.getBookFile(uuid);
+        if (!b || !file) {
+          if (!cancelled) {
+            setError('Book not found in local storage.');
+            setLoading(false);
+          }
+          return;
+        }
+        if (cancelled) return;
+        setBook(b);
+        const startPage = b.lastReadPage > 0 ? b.lastReadPage : 1;
+        setCurrentPage(startPage);
 
-      const bytes = await file.pdfBlob.arrayBuffer();
-      const pdfDoc = await pdfService.open(bytes);
-      if (cancelled) return;
-      setDoc(pdfDoc);
-      setLoading(false);
+        // Copy the bytes — pdf.js's getDocument() detaches/transfers
+        // the ArrayBuffer it's given, so we must not hand it the same
+        // buffer the Blob still references.
+        const bytes = await file.pdfBlob.arrayBuffer();
+        const bytesCopy = bytes.slice(0);
+        const pdfDoc = await pdfService.open(bytesCopy);
+        if (cancelled) return;
+        setDoc(pdfDoc);
+        setLoading(false);
+      } catch (err) {
+        console.error('Failed to load PDF:', err);
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load this PDF.');
+          setLoading(false);
+        }
+      }
     })();
 
     return () => {
@@ -63,14 +80,19 @@ export function ReaderPage() {
   const renderPage = useCallback(
     async (pageNum: number) => {
       if (!doc || !canvasRef.current) return;
-      const page = await doc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1.5 });
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      try {
+        const page = await doc.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+      } catch (err) {
+        console.error('Failed to render page', pageNum, err);
+        setError(err instanceof Error ? err.message : 'Failed to render this page.');
+      }
     },
     [doc],
   );
@@ -112,6 +134,14 @@ export function ReaderPage() {
 
   if (loading) {
     return <div className="reader-loading">Loading…</div>;
+  }
+  if (error) {
+    return (
+      <div className="reader-loading reader-loading--error">
+        <p>{error}</p>
+        <button onClick={() => navigate('/')}>← Back to library</button>
+      </div>
+    );
   }
   if (!book || !doc) {
     return <div className="reader-loading">Book not found.</div>;

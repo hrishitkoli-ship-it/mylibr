@@ -12,7 +12,13 @@ import type { Book, BookFile } from '../types';
  */
 export async function importPdf(file: File): Promise<Book> {
   const bytes = await file.arrayBuffer();
-  const doc = await pdfService.open(bytes);
+
+  // pdf.js's getDocument() takes ownership of (detaches) the
+  // ArrayBuffer it's given for zero-copy performance. We must open a
+  // *copy* and keep the original bytes intact for storage, or the
+  // Blob written to IndexedDB ends up empty and the reader fails
+  // later with "the PDF file is empty, i.e. its size is zero bytes".
+  const doc = await pdfService.open(bytes.slice(0));
   const coverBlob = await pdfService.renderPageToPng(doc, 1);
 
   const uuid = uuidv4();
