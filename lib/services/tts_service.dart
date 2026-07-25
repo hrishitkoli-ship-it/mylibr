@@ -1,20 +1,19 @@
-import 'package:flutter_tts/flutter_tts.dart';
+import '../web_interop/tts_interop.dart';
+import '../web_interop/pdf_interop.dart';
 import 'pdf_text_service.dart';
 
 enum TtsPlaybackState { stopped, playing, paused }
 
-/// Thin wrapper around flutter_tts, which itself bridges to:
-///  - Android: android.speech.tts.TextToSpeech (built-in, free)
-///  - iOS: AVSpeechSynthesizer (built-in, free)
-/// No API keys, no network requests, no per-character billing.
+/// Wraps window.speechSynthesis (native browser TTS). No API keys, no
+/// network call — the browser/OS provides the voice locally, same
+/// mechanism as e.g. VoiceOver or built-in screen readers.
 class TtsService {
-  final FlutterTts _tts = FlutterTts();
   final PdfTextService _textService;
 
   TtsPlaybackState state = TtsPlaybackState.stopped;
-  double speechRate = 0.5; // 0.0 - 1.0 (flutter_tts normalized range)
-  double pitch = 1.0; // 0.5 - 2.0
-  double volume = 1.0; // 0.0 - 1.0
+  double speechRate = 1.0; // Web Speech API range: 0.1 - 10, UI constrains to 0.5-2.0
+  double pitch = 1.0; // 0 - 2
+  double volume = 1.0; // 0 - 1
 
   List<String> _pages = [];
   int _currentPageIndex = 0;
@@ -22,35 +21,20 @@ class TtsService {
   void Function()? onFinished;
 
   TtsService(this._textService) {
-    _tts.setStartHandler(() => state = TtsPlaybackState.playing);
-    _tts.setCancelHandler(() => state = TtsPlaybackState.stopped);
-    _tts.setPauseHandler(() => state = TtsPlaybackState.paused);
-    _tts.setContinueHandler(() => state = TtsPlaybackState.playing);
-
-    // When one page's utterance finishes, auto-advance to the next
-    // page for continuous "read the book aloud" playback.
-    _tts.setCompletionHandler(_onUtteranceComplete);
+    WebTtsInterop.onStart(() => state = TtsPlaybackState.playing);
+    WebTtsInterop.onEnd(_onUtteranceComplete);
   }
 
-  Future<void> init() async {
-    await _tts.setSpeechRate(speechRate);
-    await _tts.setPitch(pitch);
-    await _tts.setVolume(volume);
-    await _tts.awaitSpeakCompletion(true);
-  }
-
-  /// Loads the full document text (page-by-page) so playback can
-  /// auto-advance, and begins speaking from [startPage] (1-indexed).
   Future<void> loadDocumentAndPlay({
-    required String pdfPath,
+    required PdfJsDocument doc,
     required int startPage,
   }) async {
-    _pages = _textService.extractAllPages(pdfPath);
+    _pages = await _textService.extractAllPages(doc);
     _currentPageIndex = (startPage - 1).clamp(0, _pages.length - 1);
-    await _speakCurrentPage();
+    _speakCurrentPage();
   }
 
-  Future<void> _speakCurrentPage() async {
+  void _speakCurrentPage() {
     if (_currentPageIndex >= _pages.length) {
       state = TtsPlaybackState.stopped;
       onFinished?.call();
@@ -62,49 +46,36 @@ class TtsService {
       _currentPageIndex++;
       return _speakCurrentPage();
     }
-    await _tts.speak(text);
+    WebTtsInterop.speak(text, rate: speechRate, pitch: pitch, volume: volume);
   }
 
-  Future<void> _onUtteranceComplete() async {
+  void _onUtteranceComplete() {
     if (state == TtsPlaybackState.stopped) return; // user stopped manually
     _currentPageIndex++;
-    await _speakCurrentPage();
+    _speakCurrentPage();
   }
 
-  Future<void> pause() async {
-    await _tts.pause();
+  void pause() {
+    WebTtsInterop.pause();
+    state = TtsPlaybackState.paused;
   }
 
-  Future<void> resume() async {
-    // flutter_tts has no true "resume" on all platforms; re-speak the
-    // current page from its start is the reliable cross-platform approach.
-    await _speakCurrentPage();
+  void resume() {
+    WebTtsInterop.resume();
+    state = TtsPlaybackState.playing;
   }
 
-  Future<void> stop() async {
-    await _tts.stop();
+  void stop() {
+    WebTtsInterop.cancel();
     state = TtsPlaybackState.stopped;
   }
 
-  Future<void> setSpeechRate(double rate) async {
-    speechRate = rate.clamp(0.1, 1.0);
-    await _tts.setSpeechRate(speechRate);
-  }
-
-  Future<void> setPitch(double value) async {
-    pitch = value.clamp(0.5, 2.0);
-    await _tts.setPitch(pitch);
-  }
-
-  Future<void> setVolume(double value) async {
-    volume = value.clamp(0.0, 1.0);
-    await _tts.setVolume(volume);
-  }
+  void setSpeechRate(double rate) => speechRate = rate.clamp(0.5, 2.0);
+  void setPitch(double value) => pitch = value.clamp(0.5, 2.0);
+  void setVolume(double value) => volume = value.clamp(0.0, 1.0);
 
   int get currentPage => _currentPageIndex + 1;
   int get totalPages => _pages.length;
 
-  void dispose() {
-    _tts.stop();
-  }
+  void dispose() => WebTtsInterop.cancel();
 }

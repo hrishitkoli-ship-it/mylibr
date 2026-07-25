@@ -1,23 +1,31 @@
-import 'package:objectbox/objectbox.dart';
-import 'book.dart';
-
-@Entity()
 class Bookmark {
-  @Id()
-  int id = 0;
+  String id; // sembast record key (uuid)
+  String bookUuid;
+  int pageNumber;
+  String note;
+  int dateCreated;
 
-  int pageNumber = 0;
+  Bookmark({
+    required this.id,
+    required this.bookUuid,
+    required this.pageNumber,
+    this.note = '',
+    int? dateCreated,
+  }) : dateCreated = dateCreated ?? DateTime.now().millisecondsSinceEpoch;
 
-  /// Optional user note attached to the bookmark.
-  String note = '';
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'bookUuid': bookUuid,
+        'pageNumber': pageNumber,
+        'note': note,
+        'dateCreated': dateCreated,
+      };
 
-  int dateCreated = 0;
-
-  final book = ToOne<Book>();
-
-  Bookmark();
-
-  Bookmark.create({required this.pageNumber, this.note = ''}) {
-    dateCreated = DateTime.now().millisecondsSinceEpoch;
-  }
+  factory Bookmark.fromMap(Map<String, Object?> map) => Bookmark(
+        id: map['id'] as String,
+        bookUuid: map['bookUuid'] as String,
+        pageNumber: map['pageNumber'] as int,
+        note: map['note'] as String? ?? '',
+        dateCreated: map['dateCreated'] as int?,
+      );
 }

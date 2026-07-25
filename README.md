@@ -10,8 +10,8 @@ backend, no API keys, no network calls.
 - [Setup instructions](docs/SETUP.md)
 
 ## Stack
-Flutter · ObjectBox (local DB) · pdfx (rendering) ·
-syncfusion_flutter_pdf (text extraction) · flutter_tts (native TTS) ·
+Flutter Web · sembast_web (IndexedDB) · pdf.js via JS interop
+(rendering + text extraction) · Web Speech API via JS interop (TTS) ·
 provider (state)
 
 ## Status

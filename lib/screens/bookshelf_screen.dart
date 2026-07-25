@@ -1,8 +1,9 @@
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../state/library_state.dart';
 import '../models/book.dart';
+import '../services/local_blob_store.dart';
 import 'reader_screen.dart';
 
 class BookshelfScreen extends StatelessWidget {
@@ -13,9 +14,7 @@ class BookshelfScreen extends StatelessWidget {
     final state = context.watch<LibraryState>();
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('MyLibrary'),
-      ),
+      appBar: AppBar(title: const Text('MyLibrary')),
       body: Column(
         children: [
           Padding(
@@ -35,7 +34,7 @@ class BookshelfScreen extends StatelessWidget {
                 : GridView.builder(
                     padding: const EdgeInsets.all(12),
                     gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
+                      crossAxisCount: 4,
                       childAspectRatio: 0.62,
                       crossAxisSpacing: 12,
                       mainAxisSpacing: 16,
@@ -59,8 +58,7 @@ class BookshelfScreen extends StatelessWidget {
                 }
               },
         icon: state.isImporting
-            ? const SizedBox(
-                width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.add),
         label: Text(state.isImporting ? 'Importing…' : 'Add PDF'),
       ),
@@ -88,26 +86,40 @@ class _BookTile extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
               child: AspectRatio(
                 aspectRatio: 0.7,
-                child: File(book.coverPath).existsSync()
-                    ? Image.file(File(book.coverPath), fit: BoxFit.cover)
-                    : Container(
+                child: FutureBuilder<Uint8List?>(
+                  future: context.read<LibraryState>().blobStore.getBytes(book.coverBlobKey),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState != ConnectionState.done) {
+                      return Container(color: Colors.grey.shade200);
+                    }
+                    final bytes = snapshot.data;
+                    if (bytes == null) {
+                      return Container(
                         color: Colors.grey.shade300,
                         child: const Icon(Icons.picture_as_pdf, size: 40),
-                      ),
+                      );
+                    }
+                    return Image.memory(bytes, fit: BoxFit.cover);
+                  },
+                ),
               ),
             ),
           ),
           const SizedBox(height: 6),
-          Text(book.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+          Text(book.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
           if (book.author.isNotEmpty)
-            Text(book.author, maxLines: 1, overflow: TextOverflow.ellipsis,
+            Text(book.author,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
-          if (book.genres.isNotEmpty)
+          if (book.genreNames.isNotEmpty)
             Wrap(
               spacing: 4,
-              children: book.genres.take(2).map((g) => Chip(
-                label: Text(g.name, style: const TextStyle(fontSize: 9)),
+              children: book.genreNames.take(2).map((g) => Chip(
+                label: Text(g, style: const TextStyle(fontSize: 9)),
                 padding: EdgeInsets.zero,
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.compact,

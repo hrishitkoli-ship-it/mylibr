@@ -1,48 +1,19 @@
-import 'dart:io';
-import 'package:syncfusion_flutter_pdf/pdf.dart';
+import '../web_interop/pdf_interop.dart';
 
-/// Extracts raw text from a PDF entirely on-device using
-/// syncfusion_flutter_pdf's local parser — no OCR service, no cloud call.
+/// Extracts text from an already-open pdf.js document. Rendering and
+/// parsing both happen inside the browser tab — no server round trip.
 class PdfTextService {
-  /// Extracts text from a single page (1-indexed to match the reader UI).
-  String extractPageText({required String pdfPath, required int pageNumber}) {
-    final bytes = File(pdfPath).readAsBytesSync();
-    final document = PdfDocument(inputBytes: bytes);
-    try {
-      final extractor = PdfTextExtractor(document);
-      final text = extractor.extractText(
-        startPageIndex: pageNumber - 1,
-        endPageIndex: pageNumber - 1,
-      );
-      return _cleanForSpeech(text);
-    } finally {
-      document.dispose();
-    }
+  Future<String> extractPageText(PdfJsDocument doc, int pageNumber) async {
+    final raw = await PdfInterop.extractPageText(doc, pageNumber);
+    return _cleanForSpeech(raw);
   }
 
-  /// Extracts the whole document's text, page by page, for
-  /// "continuous read" mode. Returns a list so the TTS controller can
-  /// track which page is currently being spoken.
-  List<String> extractAllPages(String pdfPath) {
-    final bytes = File(pdfPath).readAsBytesSync();
-    final document = PdfDocument(inputBytes: bytes);
-    try {
-      final extractor = PdfTextExtractor(document);
-      final pages = <String>[];
-      for (var i = 0; i < document.pages.count; i++) {
-        final text = extractor.extractText(startPageIndex: i, endPageIndex: i);
-        pages.add(_cleanForSpeech(text));
-      }
-      return pages;
-    } finally {
-      document.dispose();
-    }
+  Future<List<String>> extractAllPages(PdfJsDocument doc) async {
+    final raw = await PdfInterop.extractAllPages(doc);
+    return raw.map(_cleanForSpeech).toList();
   }
 
   String _cleanForSpeech(String raw) {
-    return raw
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .replaceAll(RegExp(r'-\s'), '') // de-hyphenate line-wrapped words
-        .trim();
+    return raw.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 }

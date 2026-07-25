@@ -1,56 +1,70 @@
-# MyLibrary — Setup
+# MyLibrary (Web) — Setup
 
 ## Prerequisites
-- Flutter SDK (stable channel)
-- Android Studio / Xcode for platform builds
-- A physical device recommended for TTS testing (see IMPLEMENTATION_PLAN.md)
+- Flutter SDK (stable channel) with web support enabled:
+  ```bash
+  flutter config --enable-web
+  ```
+- A Chromium-based browser for local dev (`flutter run -d chrome`)
 
 ## First-time setup
-
 ```bash
 flutter pub get
-
-# Required: generates lib/objectbox.g.dart and objectbox-model.json
-# from the @Entity() classes in lib/models/. This repo does not
-# commit generated code — run this before first build and again
-# any time a model in lib/models/ changes.
-dart run build_runner build --delete-conflicting-outputs
+flutter run -d chrome
 ```
+No code generation step is required — sembast is schemaless, so
+there's no ObjectBox-style build_runner step in the web build.
 
-## Android
-`android/app/build.gradle`:
-```gradle
-android {
-    defaultConfig {
-        minSdkVersion 21
-    }
-}
-```
-ObjectBox ships native `.so` libraries via `objectbox_flutter_libs` —
-no manual NDK config needed for standard builds.
-
-## iOS
-`ios/Podfile`:
-```ruby
-platform :ios, '13.0'
-```
-Run `cd ios && pod install` after `flutter pub get`.
-
-## Running
+## Building for production
 ```bash
-flutter run
+flutter build web --release
 ```
+Output lands in `build/web/` — deploy that directory to any static
+host (Vercel, Netlify, GitHub Pages, etc). Since the app is fully
+client-side and local-only, no server-side runtime is needed.
 
-## Regenerating after model changes
-Any time you add/edit a field on `Book`, `Genre`, or `Bookmark`:
-```bash
-dart run build_runner build --delete-conflicting-outputs
-```
-ObjectBox migrates the local schema automatically on next app launch
-for additive changes (new fields/entities). Renames/removals need the
-`@Id(assignable: true)` / uid annotations described in ObjectBox docs
-if you need to preserve existing user data across the change.
+## Vendoring pdf.js for a fully offline production build
+This scaffold loads pdf.js from cdnjs in `web/index.html` for
+development convenience. For a production deploy with zero external
+requests at runtime:
 
-## Verifying zero network dependency
-Turn on airplane mode and run the full import -> read -> TTS flow.
-Nothing in this app should require connectivity at any point.
+1. Download `pdf.min.js` and `pdf.worker.min.js` from the pdf.js
+   releases (matching version, currently 4.4.168) into `web/pdfjs/`.
+2. Update `web/index.html`:
+   ```html
+   <script src="pdfjs/pdf.min.js"></script>
+   <script>
+     pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdfjs/pdf.worker.min.js';
+   </script>
+   ```
+3. Rebuild — `flutter build web` will bundle `web/pdfjs/` as static
+   assets automatically.
+
+## Browser storage notes
+- All data (PDFs, covers, metadata) lives in IndexedDB, scoped to
+  the deployed origin. Different browsers / private-browsing sessions
+  will not share the library.
+- IndexedDB has no fixed hard cap in most browsers, but is still
+  subject to overall device storage and browser eviction policies for
+  rarely-used sites — a large PDF library on a phone browser could hit
+  practical limits sooner than on desktop.
+- There is currently no export/backup feature; clearing site data
+  deletes the whole library. Flag this to users in-app.
+
+## Verifying zero runtime network dependency
+Load the deployed app once (to cache assets), then go offline
+(devtools "Offline" throttling, or airplane mode on mobile) and run
+the full import -> read -> TTS flow. Everything should keep working
+except any use of the CDN-hosted pdf.js in the dev config above — the
+vendored setup removes that last external dependency too.
+
+## Testing checklist (adapted for web)
+- [ ] Import PDF works with the browser in offline mode (after first asset load)
+- [ ] Library persists across page reloads (IndexedDB)
+- [ ] Library persists across full browser restart
+- [ ] Cover renders correctly for portrait, landscape, multi-column PDFs
+- [ ] Custom cover override persists after reload
+- [ ] Search matches partial title, author, and genre substrings
+- [ ] TTS play/pause/stop/speed/pitch work in Chrome, Firefox, Safari
+- [ ] Deleting a book removes its PDF and cover blobs from IndexedDB
+- [ ] Large PDF (100+ pages) import and page-render performance is acceptable

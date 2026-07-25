@@ -1,112 +1,95 @@
-# MyLibrary — Architecture
+# MyLibrary (Web) — Architecture
 
-100% offline, local-only personal PDF library and reader. No backend,
-no API keys, no network calls anywhere in the app.
+100% offline-capable, browser-local personal PDF library and reader.
+No backend, no API keys, no network calls except the one-time load of
+the app's own static assets (and pdf.js from a CDN in dev — see
+SETUP.md for pinning it locally for production).
 
 ## Stack
 
 | Concern            | Choice                          | Why |
 |---------------------|----------------------------------|-----|
-| Framework            | Flutter                         | Single codebase, iOS + Android, mature PDF/TTS plugin ecosystem |
-| Local database       | ObjectBox                       | Fast on-device NoSQL, native relations (ToMany/ToOne), zero server component (ObjectBox Sync add-on is not used) |
-| File storage          | `path_provider` app documents dir | Sandboxed per-app storage, survives app restarts, private to the app |
-| PDF rendering         | `pdfx`                          | Local PdfDocument/PdfPage rendering for cover thumbnails and page view, no cloud rendering |
-| PDF text extraction   | `syncfusion_flutter_pdf`        | Pure on-device text extraction (Community License, free for small teams — verify eligibility) |
-| TTS                   | `flutter_tts`                   | Bridges to Android `TextToSpeech` / iOS `AVSpeechSynthesizer` — both built into the OS, free, offline |
-| State management      | `provider`                      | Lightweight, sufficient for this app's scope |
-| File/image picking    | `file_picker`, `image_picker`   | Native OS pickers, no upload step |
+| Framework            | Flutter Web                     | Reuses the same Dart UI code across the previous mobile scaffold |
+| Local database       | sembast_web (IndexedDB)          | Schemaless, JSON-safe, browser-native persistent storage — survives reloads |
+| Blob storage          | IndexedDB via sembast (base64)   | PDFs and cover PNGs stored as browser-local records, never uploaded |
+| PDF rendering & text  | pdf.js via JS interop            | Mozilla's PDF engine, runs entirely client-side in the tab |
+| TTS                   | Web Speech API (`speechSynthesis`) | Native browser TTS, free, no network call at speak-time |
+| State management      | `provider`                      | Same as mobile scaffold |
+| File/image picking    | `file_picker`, `image_picker`   | Both have web implementations backed by the native browser file input |
 
-## Directory layout on device
+## Why not reuse the mobile-native packages directly
+
+| Mobile package | Web replacement | Reason |
+|---|---|---|
+| ObjectBox | sembast_web | ObjectBox has no web/WASM target |
+| `path_provider` sandbox dir | IndexedDB (via sembast/blob store) | No filesystem access in the browser sandbox |
+| `pdfx` (native render) | pdf.js JS interop | No native PDF renderer available on web |
+| `syncfusion_flutter_pdf` (native text extraction) | pdf.js `getTextContent()` | Syncfusion's Flutter text extraction targets native platforms |
+| `flutter_tts` | Web Speech API interop | flutter_tts's web support is limited; calling `speechSynthesis` directly is more reliable |
+
+## Directory / storage layout (browser)
+
+Everything lives in IndexedDB, scoped to the site's origin:
 
 ```
-<AppDocumentsDirectory>/
-  objectbox/              # ObjectBox database files
-  library/
-    pdfs/<uuid>.pdf        # imported PDFs, copied from wherever the user picked them
-    covers/<uuid>.png      # auto-extracted page-1 render OR user-picked custom cover
+IndexedDB: mylibrary.db
+  store: books      -> { uuid, title, author, ..., pdfBlobKey, coverBlobKey }
+  store: bookmarks  -> { id, bookUuid, pageNumber, note, ... }
+  store: blobs       -> { "pdf:<uuid>": {data: base64}, "cover:<uuid>": {data: base64} }
 ```
 
-Every book gets a UUID at import time; that UUID is the filename for
-both its PDF and its cover, so lookups never depend on user-editable
-fields like title.
+Clearing browser site data removes the entire library — this is
+expected for a local-only app and should be called out in the UI
+(e.g. an "export/backup" feature is a natural Phase 2 addition, since
+there is no cloud copy).
 
 ## Data flow: import
 
 ```
 User taps "Add PDF"
-  -> file_picker native chooser (local filesystem / on-device Files app)
-  -> LocalStorageService.importPdf(): copy into <sandbox>/library/pdfs/<uuid>.pdf
-  -> CoverService.getPageCount(): open with pdfx, read pagesCount
-  -> CoverService.autoGenerateCover(): render page 1 -> PNG -> <sandbox>/library/covers/<uuid>.png
-  -> Book record built and persisted via LibraryRepository.addBook() (ObjectBox)
-  -> UI refreshes bookshelf grid
+  -> file_picker web file input, bytes read directly into memory (withData: true)
+  -> LocalBlobStore.savePdf(): base64-encode, write to IndexedDB via sembast
+  -> pdf.js opens the in-memory bytes (pdfBridge.loadDocument)
+  -> pdf.js renders page 1 to a <canvas>, exported as PNG bytes
+  -> LocalBlobStore.saveCover(): base64-encode, write to IndexedDB
+  -> Book record written to sembast 'books' store
+  -> UI refreshes bookshelf grid (Image.memory from blob bytes)
 ```
-
-No step in this pipeline leaves the device.
 
 ## Data flow: TTS playback
 
 ```
 User taps Play in reader toolbar
-  -> PdfTextService.extractAllPages(): syncfusion parses PDF locally, returns List<String>
-  -> TtsService.loadDocumentAndPlay(): flutter_tts.speak() on current page's text
-  -> on utterance completion, auto-advance to next page's text
-  -> PDF view jumps to match the page currently being spoken
+  -> pdf.js getTextContent() per page (PdfTextService.extractAllPages)
+  -> ttsBridge.speak(text, rate, pitch, volume) -> window.speechSynthesis
+  -> utterance.onend -> auto-advance to next page's text + re-render that page
   -> user controls: pause/resume, stop, speech rate slider, pitch slider
 ```
 
-flutter_tts talks directly to the OS TTS engine; there is no
-network round-trip and no per-character cost.
+## Local database schema
 
-## Local database schema (ObjectBox)
+Same logical shape as the mobile scaffold, adapted to plain
+JSON-serializable Dart classes (sembast has no code-generated schema):
 
 ### Book
-| Field | Type | Notes |
-|---|---|---|
-| id | int (auto) | ObjectBox internal id |
-| uuid | String | Stable id, used for filenames |
-| title, author, description | String | User-editable metadata |
-| filePath | String | Absolute path to local PDF |
-| coverPath | String | Absolute path to local cover PNG |
-| hasCustomCover | bool | True once user overrides auto cover |
-| pageCount | int | From pdfx at import time |
-| lastReadPage | int | For resume-reading |
-| dbStatus | int | Persisted enum index: 0=unread, 1=reading, 2=completed |
-| dateAdded, dateLastOpened | int (epoch ms) | |
-| fileSizeBytes | int | For storage-usage UI |
-| genres | ToMany\<Genre\> | Many-to-many |
-| bookmarks | ToMany\<Bookmark\> | One-to-many |
+`uuid, title, author, description, pdfBlobKey, coverBlobKey,
+hasCustomCover, pageCount, lastReadPage, status (0/1/2), dateAdded,
+dateLastOpened, fileSizeBytes, genreNames: List<String>`
 
-### Genre
-| Field | Type | Notes |
-|---|---|---|
-| id | int (auto) | |
-| name | String (unique) | e.g. "Sci-Fi" |
-| colorHex | String | For UI chip color |
-| books | ToMany\<Book\> (backlink) | |
+Genres are stored as a plain string list on `Book` rather than a
+separate join table — sembast has no native relations, and a personal
+library's tag set is small enough that in-memory filtering (see
+`LibraryRepository.search`) is fast without an index.
 
 ### Bookmark
-| Field | Type | Notes |
-|---|---|---|
-| id | int (auto) | |
-| pageNumber | int | |
-| note | String | Optional |
-| dateCreated | int (epoch ms) | |
-| book | ToOne\<Book\> | |
-
-## State management
-
-`LibraryState` (a `ChangeNotifier`) is the single source of truth for
-the bookshelf: it owns the in-memory `books` list, search query, and
-import/cover/status mutation methods, and calls `LibraryRepository`
-for every persistence operation. Screens `watch<LibraryState>()` via
-`provider` and rebuild on `notifyListeners()`.
+`id, bookUuid, pageNumber, note, dateCreated`
 
 ## Explicitly out of scope / not used
 
-- No REST/GraphQL client of any kind.
-- No Firebase, Supabase, or any BaaS.
-- No cloud TTS (Google Cloud TTS, ElevenLabs, Amazon Polly, etc.).
-- No analytics or crash-reporting SDKs that phone home.
-- No ObjectBox Sync (that's ObjectBox's paid cloud-sync product —
-  this app only uses the free embedded database).
+- No REST/GraphQL client, no BaaS (Firebase/Supabase/etc).
+- No cloud TTS (Google Cloud TTS, ElevenLabs, Amazon Polly).
+- No analytics/crash-reporting SDKs.
+- pdf.js is loaded from a CDN in this scaffold for development
+  convenience; for a genuinely zero-network production deploy, vendor
+  it into `web/pdfjs/` and update the `<script>` src in
+  `web/index.html` (see SETUP.md).

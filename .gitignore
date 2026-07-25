@@ -33,3 +33,6 @@ ios/Runner.xcworkspace/xcuserdata/
 
 # OS
 .DS_Store
+
+# Flutter web build output
+build/web/

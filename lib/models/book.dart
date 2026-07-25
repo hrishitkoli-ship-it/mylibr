@@ -1,68 +1,76 @@
-import 'package:objectbox/objectbox.dart';
-import 'genre.dart';
-import 'bookmark.dart';
-
 enum ReadingStatus { unread, reading, completed }
 
-@Entity()
 class Book {
-  @Id()
-  int id = 0;
+  String uuid; // also the sembast record key
+  String title;
+  String author;
+  String description;
 
-  /// Unique local identifier (uuid), stable across DB migrations.
-  String uuid = '';
+  /// IndexedDB blob-store key for the PDF bytes (see LocalStorageService).
+  String pdfBlobKey;
 
-  String title = '';
-  String author = '';
-  String description = '';
+  /// IndexedDB blob-store key for the cover PNG bytes.
+  String coverBlobKey;
 
-  /// Absolute path to the PDF file inside the app sandbox directory.
-  /// e.g. <appDocsDir>/library/pdfs/<uuid>.pdf
-  String filePath = '';
+  bool hasCustomCover;
+  int pageCount;
+  int lastReadPage;
+  ReadingStatus status;
+  int dateAdded;
+  int dateLastOpened;
+  int fileSizeBytes;
+  List<String> genreNames;
 
-  /// Absolute path to the cover image (either auto-extracted page-1
-  /// render or a user-picked custom image), stored in
-  /// <appDocsDir>/library/covers/<uuid>.png
-  String coverPath = '';
-
-  /// True if the user overrode the auto-generated cover.
-  bool hasCustomCover = false;
-
-  int pageCount = 0;
-
-  /// Last page the user was reading (for "resume reading").
-  int lastReadPage = 0;
-
-  @Transient()
-  ReadingStatus status = ReadingStatus.unread;
-
-  // ObjectBox can't store enums directly; this int is the persisted field.
-  int get dbStatus => status.index;
-  set dbStatus(int value) => status = ReadingStatus.values[value];
-
-  int dateAdded = 0; // millisecondsSinceEpoch
-  int dateLastOpened = 0;
-
-  /// File size in bytes, useful for storage-usage screens.
-  int fileSizeBytes = 0;
-
-  final genres = ToMany<Genre>();
-  final bookmarks = ToMany<Bookmark>();
-
-  Book();
-
-  Book.create({
+  Book({
     required this.uuid,
     required this.title,
-    required this.filePath,
-    required this.coverPath,
+    required this.pdfBlobKey,
+    required this.coverBlobKey,
     this.author = '',
     this.description = '',
+    this.hasCustomCover = false,
     this.pageCount = 0,
+    this.lastReadPage = 0,
+    this.status = ReadingStatus.unread,
+    int? dateAdded,
+    int? dateLastOpened,
     this.fileSizeBytes = 0,
-  }) {
-    dateAdded = DateTime.now().millisecondsSinceEpoch;
-    dateLastOpened = dateAdded;
-    status = ReadingStatus.unread;
-  }
+    List<String>? genreNames,
+  })  : dateAdded = dateAdded ?? DateTime.now().millisecondsSinceEpoch,
+        dateLastOpened = dateLastOpened ?? DateTime.now().millisecondsSinceEpoch,
+        genreNames = genreNames ?? [];
+
+  Map<String, Object?> toMap() => {
+        'uuid': uuid,
+        'title': title,
+        'author': author,
+        'description': description,
+        'pdfBlobKey': pdfBlobKey,
+        'coverBlobKey': coverBlobKey,
+        'hasCustomCover': hasCustomCover,
+        'pageCount': pageCount,
+        'lastReadPage': lastReadPage,
+        'status': status.index,
+        'dateAdded': dateAdded,
+        'dateLastOpened': dateLastOpened,
+        'fileSizeBytes': fileSizeBytes,
+        'genreNames': genreNames,
+      };
+
+  factory Book.fromMap(Map<String, Object?> map) => Book(
+        uuid: map['uuid'] as String,
+        title: map['title'] as String,
+        pdfBlobKey: map['pdfBlobKey'] as String,
+        coverBlobKey: map['coverBlobKey'] as String,
+        author: map['author'] as String? ?? '',
+        description: map['description'] as String? ?? '',
+        hasCustomCover: map['hasCustomCover'] as bool? ?? false,
+        pageCount: map['pageCount'] as int? ?? 0,
+        lastReadPage: map['lastReadPage'] as int? ?? 0,
+        status: ReadingStatus.values[map['status'] as int? ?? 0],
+        dateAdded: map['dateAdded'] as int?,
+        dateLastOpened: map['dateLastOpened'] as int?,
+        fileSizeBytes: map['fileSizeBytes'] as int? ?? 0,
+        genreNames: (map['genreNames'] as List?)?.cast<String>() ?? [],
+      );
 }

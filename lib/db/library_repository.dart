@@ -1,102 +1,92 @@
+import 'package:sembast/sembast.dart';
 import '../models/book.dart';
-import '../models/genre.dart';
 import '../models/bookmark.dart';
-import '../objectbox.g.dart';
-import 'objectbox_store.dart';
+import 'sembast_db.dart';
 
-/// Single point of access for all local persistence. Every method here
-/// reads/writes ObjectBox only — no network layer exists in this class.
 class LibraryRepository {
-  final ObjectBoxStore _obStore;
-  late final Box<Book> _bookBox;
-  late final Box<Genre> _genreBox;
-  late final Box<Bookmark> _bookmarkBox;
-
-  LibraryRepository(this._obStore) {
-    _bookBox = _obStore.store.box<Book>();
-    _genreBox = _obStore.store.box<Genre>();
-    _bookmarkBox = _obStore.store.box<Bookmark>();
+  Future<void> addBook(Book book) async {
+    final db = await SembastDb.instance();
+    await SembastDb.booksStore.record(book.uuid).put(db, book.toMap());
   }
 
-  // ---- Books ----
-
-  int addBook(Book book) => _bookBox.put(book);
-
-  void updateBook(Book book) => _bookBox.put(book);
-
-  void deleteBook(int id) => _bookBox.remove(id);
-
-  Book? getBook(int id) => _bookBox.get(id);
-
-  List<Book> allBooks() =>
-      _bookBox.query().order(Book_.dateAdded, flags: Order.descending).build().find();
-
-  List<Book> booksByStatus(ReadingStatus status) {
-    final query = _bookBox
-        .query(Book_.dbStatus.equals(status.index))
-        .order(Book_.title)
-        .build();
-    final result = query.find();
-    query.close();
-    return result;
+  Future<void> updateBook(Book book) async {
+    final db = await SembastDb.instance();
+    await SembastDb.booksStore.record(book.uuid).put(db, book.toMap());
   }
 
-  /// Real-time instant search across title, author, and genre tag names.
-  List<Book> search(String queryText) {
-    if (queryText.trim().isEmpty) return allBooks();
+  Future<void> deleteBook(String uuid) async {
+    final db = await SembastDb.instance();
+    await SembastDb.booksStore.record(uuid).delete(db);
+  }
+
+  Future<Book?> getBook(String uuid) async {
+    final db = await SembastDb.instance();
+    final record = await SembastDb.booksStore.record(uuid).get(db);
+    return record == null ? null : Book.fromMap(record);
+  }
+
+  Future<List<Book>> allBooks() async {
+    final db = await SembastDb.instance();
+    final records = await SembastDb.booksStore.find(
+      db,
+      finder: Finder(sortOrders: [SortOrder('dateAdded', false)]),
+    );
+    return records.map((r) => Book.fromMap(r.value)).toList();
+  }
+
+  Future<List<Book>> booksByStatus(ReadingStatus status) async {
+    final db = await SembastDb.instance();
+    final records = await SembastDb.booksStore.find(
+      db,
+      finder: Finder(
+        filter: Filter.equals('status', status.index),
+        sortOrders: [SortOrder('title')],
+      ),
+    );
+    return records.map((r) => Book.fromMap(r.value)).toList();
+  }
+
+  /// Real-time instant search across title, author, and genre tags —
+  /// runs in-memory over the (small, personal-library-sized) book set.
+  Future<List<Book>> search(String queryText) async {
+    final all = await allBooks();
+    if (queryText.trim().isEmpty) return all;
     final q = queryText.toLowerCase();
-
-    final byTitleOrAuthor = _bookBox
-        .query(Book_.title.contains(q, caseSensitive: false) |
-            Book_.author.contains(q, caseSensitive: false))
-        .build()
-        .find();
-
-    final matchingGenres = _genreBox
-        .query(Genre_.name.contains(q, caseSensitive: false))
-        .build()
-        .find();
-    final byGenre = <Book>{};
-    for (final genre in matchingGenres) {
-      byGenre.addAll(genre.books);
-    }
-
-    final combined = <int, Book>{};
-    for (final b in [...byTitleOrAuthor, ...byGenre]) {
-      combined[b.id] = b;
-    }
-    return combined.values.toList()..sort((a, b) => a.title.compareTo(b.title));
+    return all.where((b) {
+      if (b.title.toLowerCase().contains(q)) return true;
+      if (b.author.toLowerCase().contains(q)) return true;
+      if (b.genreNames.any((g) => g.toLowerCase().contains(q))) return true;
+      return false;
+    }).toList();
   }
 
-  // ---- Genres ----
-
-  Genre getOrCreateGenre(String name) {
-    final existing =
-        _genreBox.query(Genre_.name.equals(name, caseSensitive: false)).build().findFirst();
-    if (existing != null) return existing;
-    final genre = Genre.create(name: name);
-    genre.id = _genreBox.put(genre);
-    return genre;
-  }
-
-  List<Genre> allGenres() => _genreBox.getAll();
-
-  void assignGenres(Book book, List<String> genreNames) {
-    book.genres.clear();
-    for (final name in genreNames) {
-      book.genres.add(getOrCreateGenre(name));
+  Future<List<String>> allGenreNames() async {
+    final all = await allBooks();
+    final set = <String>{};
+    for (final b in all) {
+      set.addAll(b.genreNames);
     }
-    _bookBox.put(book);
+    return set.toList()..sort();
   }
 
   // ---- Bookmarks ----
 
-  int addBookmark(Book book, Bookmark bookmark) {
-    bookmark.book.target = book;
-    return _bookmarkBox.put(bookmark);
+  Future<void> addBookmark(Bookmark bookmark) async {
+    final db = await SembastDb.instance();
+    await SembastDb.bookmarksStore.record(bookmark.id).put(db, bookmark.toMap());
   }
 
-  List<Bookmark> bookmarksForBook(Book book) => book.bookmarks;
+  Future<List<Bookmark>> bookmarksForBook(String bookUuid) async {
+    final db = await SembastDb.instance();
+    final records = await SembastDb.bookmarksStore.find(
+      db,
+      finder: Finder(filter: Filter.equals('bookUuid', bookUuid)),
+    );
+    return records.map((r) => Bookmark.fromMap(r.value)).toList();
+  }
 
-  void deleteBookmark(int id) => _bookmarkBox.remove(id);
+  Future<void> deleteBookmark(String id) async {
+    final db = await SembastDb.instance();
+    await SembastDb.bookmarksStore.record(id).delete(db);
+  }
 }
